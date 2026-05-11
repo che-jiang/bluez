@@ -1,7 +1,7 @@
 name: Sync Fork
 on:
   schedule:
-    - cron: '17 */6 * * *'   # 每 6 小时，错开整点减轻 GitHub 负载
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Sync upstream
+      - name: Sync upstream master
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
-        run: gh repo sync che-jiang/bluez -b master
+        run: gh repo sync che-jiang/bluez -b master --force
