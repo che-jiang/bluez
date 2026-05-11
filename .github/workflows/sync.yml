@@ -13,5 +13,5 @@ jobs:
     steps:
       - name: Sync upstream
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: gh repo sync che-jiang/bluez -b master
