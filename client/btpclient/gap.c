@@ -17,6 +17,7 @@
 
 #include "bluetooth/bluetooth.h"
 #include "bluetooth/uuid.h"
+#include "src/shared/ad.h"
 #include "src/shared/btp.h"
 #include "btpclient.h"
 #include "core.h"
@@ -26,17 +27,6 @@
 #define AG_PATH "/org/bluez/agent"
 #define AD_IFACE "org.bluez.LEAdvertisement1"
 #define AG_IFACE "org.bluez.Agent1"
-
-/* List of assigned numbers for advertising data and scan response */
-#define AD_TYPE_FLAGS				0x01
-#define AD_TYPE_INCOMPLETE_UUID16_SERVICE_LIST	0x02
-#define AD_TYPE_SHORT_NAME			0x08
-#define AD_TYPE_COMPLETE_NAME			0x09
-#define AD_TYPE_TX_POWER			0x0a
-#define AD_TYPE_SOLICIT_UUID16_SERVICE_LIST	0x14
-#define AD_TYPE_SERVICE_DATA_UUID16		0x16
-#define AD_TYPE_APPEARANCE			0x19
-#define AD_TYPE_MANUFACTURER_DATA		0xff
 
 static void register_gap_service(void);
 
@@ -83,7 +73,7 @@ static char *dupuuid2str(const uint8_t *uuid, uint8_t len)
 {
 	switch (len) {
 	case 16:
-		return l_strdup_printf("%hhx%hhx", uuid[0], uuid[1]);
+		return l_strdup_printf("%hhx%hhx", uuid[1], uuid[0]);
 	case 128:
 		return l_strdup_printf("%hhx%hhx%hhx%hhx%hhx%hhx%hhx%hhx%hhx"
 					"%hhx%hhx%hhx%hhx%hhx%hhx%hhx", uuid[0],
@@ -99,7 +89,31 @@ static char *dupuuid2str(const uint8_t *uuid, uint8_t len)
 static void btp_gap_read_commands(uint8_t index, const void *param,
 					uint16_t length, void *user_data)
 {
-	uint16_t commands = 0;
+	const uint8_t supported_commands[] = {
+		BTP_OP_GAP_READ_SUPPORTED_COMMANDS,
+		BTP_OP_GAP_READ_CONTROLLER_INDEX_LIST,
+		BTP_OP_GAP_READ_CONTROLLER_INFO,
+		BTP_OP_GAP_RESET,
+		BTP_OP_GAP_SET_POWERED,
+		BTP_OP_GAP_SET_CONNECTABLE,
+		BTP_OP_GAP_SET_DISCOVERABLE,
+		BTP_OP_GAP_SET_BONDABLE,
+		BTP_OP_GAP_START_ADVERTISING,
+		BTP_OP_GAP_STOP_ADVERTISING,
+		BTP_OP_GAP_START_DISCOVERY,
+		BTP_OP_GAP_STOP_DISCOVERY,
+		BTP_OP_GAP_CONNECT,
+		BTP_OP_GAP_DISCONNECT,
+		BTP_OP_GAP_SET_IO_CAPA,
+		BTP_OP_GAP_PAIR,
+		BTP_OP_GAP_UNPAIR,
+		BTP_OP_GAP_PASSKEY_ENTRY_RSP,
+		BTP_OP_GAP_PASSKEY_CONFIRM_RSP,
+		BTP_OP_GAP_SET_EXTENDED_ADVERTISING,
+	};
+	uint8_t *commands = NULL;
+	size_t commands_len = 0;
+	size_t i;
 
 	if (index != BTP_INDEX_NON_CONTROLLER) {
 		btp_send_error(btp, BTP_GAP_SERVICE, index,
@@ -107,28 +121,22 @@ static void btp_gap_read_commands(uint8_t index, const void *param,
 		return;
 	}
 
-	commands |= (1 << BTP_OP_GAP_READ_SUPPORTED_COMMANDS);
-	commands |= (1 << BTP_OP_GAP_READ_CONTROLLER_INDEX_LIST);
-	commands |= (1 << BTP_OP_GAP_READ_CONTROLLER_INFO);
-	commands |= (1 << BTP_OP_GAP_RESET);
-	commands |= (1 << BTP_OP_GAP_SET_POWERED);
-	commands |= (1 << BTP_OP_GAP_SET_CONNECTABLE);
-	commands |= (1 << BTP_OP_GAP_SET_DISCOVERABLE);
-	commands |= (1 << BTP_OP_GAP_SET_BONDABLE);
-	commands |= (1 << BTP_OP_GAP_START_ADVERTISING);
-	commands |= (1 << BTP_OP_GAP_STOP_ADVERTISING);
-	commands |= (1 << BTP_OP_GAP_START_DISCOVERY);
-	commands |= (1 << BTP_OP_GAP_STOP_DISCOVERY);
-	commands |= (1 << BTP_OP_GAP_CONNECT);
-	commands |= (1 << BTP_OP_GAP_DISCONNECT);
-	commands |= (1 << BTP_OP_GAP_SET_IO_CAPA);
-	commands |= (1 << BTP_OP_GAP_PAIR);
-	commands |= (1 << BTP_OP_GAP_UNPAIR);
-
-	commands = L_CPU_TO_LE16(commands);
+	for (i = 0; i < L_ARRAY_SIZE(supported_commands); i++) {
+		if (!add_supported_command(&commands, &commands_len,
+						supported_commands[i]))
+			goto failed;
+	}
 
 	btp_send(btp, BTP_GAP_SERVICE, BTP_OP_GAP_READ_SUPPORTED_COMMANDS,
-			BTP_INDEX_NON_CONTROLLER, sizeof(commands), &commands);
+			BTP_INDEX_NON_CONTROLLER, commands_len, commands);
+
+	l_free(commands);
+
+	return;
+
+failed:
+	l_free(commands);
+	btp_send_error(btp, BTP_GAP_SERVICE, index, BTP_ERROR_FAIL);
 }
 
 static void btp_gap_read_controller_index(uint8_t index, const void *param,
@@ -806,6 +814,22 @@ static bool ad_timeout_getter(struct l_dbus *dbus,
 	return true;
 }
 
+static bool ad_secondarychannel_getter(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_builder *builder,
+					void *user_data)
+{
+	struct btp_adapter *adapter = user_data;
+	uint32_t settings = adapter->current_settings;
+
+	if (!(settings & BTP_GAP_SETTINGS_EXTENDED_ADVERTISING))
+		return false;
+
+	l_dbus_message_builder_append_basic(builder, 's', "2M");
+
+	return true;
+}
+
 static void setup_ad_interface(struct l_dbus_interface *interface)
 {
 	l_dbus_interface_method(interface, "Release",
@@ -832,6 +856,8 @@ static void setup_ad_interface(struct l_dbus_interface *interface)
 						ad_duration_getter, NULL);
 	l_dbus_interface_property(interface, "Timeout", 0, "q",
 						ad_timeout_getter, NULL);
+	l_dbus_interface_property(interface, "SecondaryChannel", 0, "s",
+					ad_secondarychannel_getter, NULL);
 }
 
 static void start_advertising_reply(struct l_dbus_proxy *proxy,
@@ -882,7 +908,10 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 		ad_data = &data[adv_data_len - remaining_data_len + 2];
 
 		switch (ad_type) {
-		case AD_TYPE_INCOMPLETE_UUID16_SERVICE_LIST:
+		case BT_AD_FLAGS:
+			/* Advertisement flags are set by bluetoothd */
+			break;
+		case BT_AD_UUID16_SOME:
 		{
 			char *uuid = dupuuid2str(ad_data, 16);
 
@@ -890,20 +919,36 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 
 			break;
 		}
-		case AD_TYPE_SHORT_NAME:
-		case AD_TYPE_COMPLETE_NAME:
+		case BT_AD_UUID16_ALL:
+		{
+			char *uuid = dupuuid2str(ad_data, 16);
+
+			l_queue_push_tail(ad.uuids, uuid);
+
+			break;
+		}
+		case BT_AD_NAME_SHORT:
+		case BT_AD_NAME_COMPLETE:
 			ad.local_name = malloc(ad_len + 1);
 			memcpy(ad.local_name, ad_data, ad_len);
 			ad.local_name[ad_len] = '\0';
 
 			break;
-		case AD_TYPE_TX_POWER:
+		case BT_AD_TX_POWER:
 			ad.tx_power = true;
 
 			/* XXX Value is omitted cause, stack fills it */
 
 			break;
-		case AD_TYPE_SERVICE_DATA_UUID16:
+		case BT_AD_SOLICIT16:
+		{
+			char *uuid = dupuuid2str(ad_data, 16);
+
+			l_queue_push_tail(ad.solicits, uuid);
+
+			break;
+		}
+		case BT_AD_SERVICE_DATA16:
 		{
 			struct service_data *sd;
 
@@ -916,11 +961,11 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 
 			break;
 		}
-		case AD_TYPE_APPEARANCE:
+		case BT_AD_GAP_APPEARANCE:
 			memcpy(&ad.local_appearance, ad_data, ad_len);
 
 			break;
-		case AD_TYPE_MANUFACTURER_DATA:
+		case BT_AD_MANUFACTURER_DATA:
 		{
 			struct manufacturer_data *md;
 
@@ -934,14 +979,6 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 			memcpy(md->data.data, ad_data + 2, md->data.len);
 
 			l_queue_push_tail(ad.manufacturers, md);
-
-			break;
-		}
-		case AD_TYPE_SOLICIT_UUID16_SERVICE_LIST:
-		{
-			char *uuid = dupuuid2str(ad_data, 16);
-
-			l_queue_push_tail(ad.solicits, uuid);
 
 			break;
 		}
@@ -1001,7 +1038,7 @@ static void btp_gap_start_advertising(uint8_t index, const void *param,
 		goto failed;
 	}
 
-	if (!l_dbus_object_add_interface(dbus, AD_PATH, AD_IFACE, NULL)) {
+	if (!l_dbus_object_add_interface(dbus, AD_PATH, AD_IFACE, adapter)) {
 		l_info("Unable to instantiate ad interface");
 
 		if (!l_dbus_unregister_interface(dbus, AD_IFACE))
@@ -2373,6 +2410,36 @@ failed:
 	btp_send_error(btp, BTP_GAP_SERVICE, index, status);
 }
 
+
+static void btp_gap_set_extended_advertising(uint8_t index, const void *param,
+					uint16_t length, void *user_data)
+{
+	struct btp_adapter *adapter = find_adapter_by_index(index);
+	const struct btp_gap_set_extended_advertising_cp *cp = param;
+	uint32_t new_settings;
+	uint8_t status = BTP_ERROR_FAIL;
+
+	if (!adapter) {
+		status = BTP_ERROR_INVALID_INDEX;
+		goto failed;
+	}
+
+	new_settings = adapter->current_settings;
+	if (cp->settings)
+		new_settings |= BTP_GAP_SETTINGS_EXTENDED_ADVERTISING;
+	else
+		new_settings &= ~BTP_GAP_SETTINGS_EXTENDED_ADVERTISING;
+	update_current_settings(adapter, new_settings);
+
+	btp_send(btp, BTP_GAP_SERVICE, BTP_OP_GAP_SET_EXTENDED_ADVERTISING,
+					adapter->index, sizeof(new_settings),
+					&new_settings);
+
+	return;
+failed:
+	btp_send_error(btp, BTP_GAP_SERVICE, index, status);
+}
+
 static void btp_gap_device_found_ev(struct l_dbus_proxy *proxy)
 {
 	struct btp_device *device = find_device_by_proxy(proxy);
@@ -2438,7 +2505,7 @@ static void btp_gap_device_found_ev(struct l_dbus_proxy *proxy)
 				ev->eir_len);
 			eir = &ev->eir[ev->eir_len - n - 4];
 			eir[0] = n + 3;
-			eir[1] = AD_TYPE_MANUFACTURER_DATA;
+			eir[1] = BT_AD_MANUFACTURER_DATA;
 			eir[2] = key >> 8;
 			eir[3] = key & 0xFF;
 			memcpy(&eir[4], data, n);
@@ -2625,6 +2692,10 @@ static void register_gap_service(void)
 
 	btp_register(btp, BTP_GAP_SERVICE, BTP_OP_GAP_PASSKEY_CONFIRM_RSP,
 					btp_gap_confirm_entry_rsp, NULL, NULL);
+
+	btp_register(btp, BTP_GAP_SERVICE, BTP_OP_GAP_SET_EXTENDED_ADVERTISING,
+					btp_gap_set_extended_advertising,
+								NULL, NULL);
 }
 
 void gap_proxy_added(struct l_dbus_proxy *proxy, void *user_data)
