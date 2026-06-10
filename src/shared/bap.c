@@ -3006,6 +3006,20 @@ static bool bap_stream_io_attach(struct bt_bap_stream *stream, int fd,
 	return true;
 }
 
+static void bap_stream_notify_connecting(struct bt_bap_stream *stream,
+						bool connecting, int fd)
+{
+	const struct queue_entry *entry;
+
+	for (entry = queue_get_entries(stream->bap->state_cbs); entry;
+						entry = entry->next) {
+		struct bt_bap_state *state = entry->data;
+
+		if (state->connecting)
+			state->connecting(stream, connecting, fd, state->data);
+	}
+}
+
 static void bap_stream_set_io(void *data, void *user_data)
 {
 	struct bt_bap_stream *stream = data;
@@ -3042,6 +3056,10 @@ static void bap_stream_set_io(void *data, void *user_data)
 			bt_bap_stream_stop(stream, NULL, NULL);
 		break;
 	}
+
+	/* Notify IO connected so transports can complete pending requests. */
+	if (fd >= 0)
+		bap_stream_notify_connecting(stream, false, fd);
 }
 
 static void ascs_ase_rsp_add_errno(struct iovec *iov, uint8_t id, int err)
@@ -3762,9 +3780,9 @@ static void ascs_ase_cp_write(struct gatt_db_attribute *attrib,
 	if (!len) {
 		DBG(bap, "invalid len %u < %u sizeof(*hdr)", len,
 							sizeof(*hdr));
-		gatt_db_attribute_write_result(attrib, id,
-				BT_ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LEN);
-		return;
+		rsp = ascs_ase_cp_rsp_new(len > 0 ? value[0] : 0x00);
+		ret = BT_ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LEN;
+		goto respond;
 	}
 
 	if (len < sizeof(*hdr)) {
@@ -3829,8 +3847,10 @@ static void ascs_ase_cp_write(struct gatt_db_attribute *attrib,
 	}
 
 respond:
-	if (ret == BT_ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LEN)
+	if (ret == BT_ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LEN) {
 		ascs_ase_rsp_add_errno(rsp, 0x00, -ENOMSG);
+		ret = 0;
+	}
 
 	gatt_db_attribute_notify(attrib, rsp->iov_base, rsp->iov_len, att);
 	gatt_db_attribute_write_result(attrib, id, ret);
@@ -7028,7 +7048,6 @@ static void bap_stream_io_connecting(void *data, void *user_data)
 {
 	struct bt_bap_stream *stream = data;
 	int fd = PTR_TO_INT(user_data);
-	const struct queue_entry *entry;
 
 	if (!stream)
 		return;
@@ -7038,14 +7057,7 @@ static void bap_stream_io_connecting(void *data, void *user_data)
 	else
 		bap_stream_io_detach(stream);
 
-	for (entry = queue_get_entries(stream->bap->state_cbs); entry;
-							entry = entry->next) {
-		struct bt_bap_state *state = entry->data;
-
-		if (state->connecting)
-			state->connecting(stream, stream->io ? true : false,
-							fd, state->data);
-	}
+	bap_stream_notify_connecting(stream, stream->io ? true : false, fd);
 }
 
 int bt_bap_stream_io_connecting(struct bt_bap_stream *stream, int fd)
