@@ -2679,6 +2679,15 @@ static int bap_ucast_io_link(struct bt_bap_stream *stream,
 			stream->ep->dir == link->ep->dir)
 		return -EINVAL;
 
+	/* The server pairs Sink and Source by matching CIG/CIS, but those are
+	 * unset until QoS Configured, so it would link unrelated ASEs (CIS 0
+	 * is otherwise a valid ID). Clients gate linking on the lock instead.
+	 */
+	if (!stream->client &&
+			(stream->qos.ucast.cis_id == BT_ISO_QOS_CIS_UNSET ||
+			link->qos.ucast.cis_id == BT_ISO_QOS_CIS_UNSET))
+		return -EINVAL;
+
 	if (stream->client && !(stream->locked && link->locked))
 		return -EINVAL;
 
@@ -2901,6 +2910,19 @@ static struct bt_bap_stream *bap_stream_new(struct bt_bap *bap,
 	stream->client = client;
 	stream->ops = bap_stream_new_ops(stream);
 	stream->pending_states = queue_new();
+
+	switch (bt_bap_pac_get_type(lpac)) {
+	case BT_BAP_SINK:
+	case BT_BAP_SOURCE:
+		stream->qos.ucast.cig_id = BT_ISO_QOS_CIG_UNSET;
+		stream->qos.ucast.cis_id = BT_ISO_QOS_CIS_UNSET;
+		break;
+	case BT_BAP_BCAST_SOURCE:
+	case BT_BAP_BCAST_SINK:
+		stream->qos.bcast.big = BT_ISO_QOS_BIG_UNSET;
+		stream->qos.bcast.bis = BT_ISO_QOS_BIS_UNSET;
+		break;
+	}
 
 	queue_push_tail(bap->streams, stream);
 
@@ -6796,8 +6818,16 @@ static bool stream_io_disconnected(struct io *io, void *user_data)
 		return false;
 	}
 
-	if (stream->ep->state == BT_ASCS_ASE_STATE_RELEASING)
+	switch (stream->ep->state) {
+	case BT_ASCS_ASE_STATE_RELEASING:
 		stream_set_state(stream, BT_BAP_STREAM_STATE_CONFIG);
+		break;
+	case BT_ASCS_ASE_STATE_ENABLING:
+	case BT_ASCS_ASE_STATE_STREAMING:
+	case BT_ASCS_ASE_STATE_DISABLING:
+		stream_set_state(stream, BT_BAP_STREAM_STATE_QOS);
+		break;
+	}
 
 	bt_bap_stream_set_io(stream, -1);
 	return false;
