@@ -1447,10 +1447,19 @@ static bool bap_stream_io_detach(struct bt_bap_stream *stream)
 	return true;
 }
 
+static void stream_state_changed(void *data, void *user_data)
+{
+	const struct bt_bap_state *state = data;
+	struct bt_bap_stream *stream = user_data;
+
+	if (state->func)
+		state->func(stream, stream->old_state, stream->state,
+							state->data);
+}
+
 static void bap_stream_state_changed(struct bt_bap_stream *stream)
 {
 	struct bt_bap *bap = stream->bap;
-	const struct queue_entry *entry;
 
 	/* Pre notification updates */
 	switch (stream->ep->state) {
@@ -1475,14 +1484,13 @@ static void bap_stream_state_changed(struct bt_bap_stream *stream)
 		break;
 	}
 
-	for (entry = queue_get_entries(bap->state_cbs); entry;
-							entry = entry->next) {
-		struct bt_bap_state *state = entry->data;
+	stream->old_state = stream->ep->old_state;
+	stream->state = stream->ep->state;
 
-		if (state->func)
-			state->func(stream, stream->ep->old_state,
-					stream->ep->state, state->data);
-	}
+	/* Notify callbacks using queue_foreach since it does attempt to
+	 * protect against concurrent modifications to the list.
+	 */
+	queue_foreach(bap->state_cbs, stream_state_changed, stream);
 
 	/* Post notification updates */
 	switch (stream->ep->state) {
@@ -2407,7 +2415,6 @@ static unsigned int bap_ucast_release(struct bt_bap_stream *stream,
 static void bap_bcast_set_state(struct bt_bap_stream *stream, uint8_t state)
 {
 	struct bt_bap *bap = stream->bap;
-	const struct queue_entry *entry;
 
 	stream->old_state = stream->state;
 	stream->state = state;
@@ -2419,14 +2426,10 @@ static void bap_bcast_set_state(struct bt_bap_stream *stream, uint8_t state)
 			bt_bap_stream_statestr(stream->old_state),
 			bt_bap_stream_statestr(stream->state));
 
-	for (entry = queue_get_entries(bap->state_cbs); entry;
-							entry = entry->next) {
-		struct bt_bap_state *state = entry->data;
-
-		if (state->func)
-			state->func(stream, stream->old_state,
-					stream->state, state->data);
-	}
+	/* Notify callbacks using queue_foreach since it does attempt to
+	 * protect against concurrent modifications to the list.
+	 */
+	queue_foreach(bap->state_cbs, stream_state_changed, stream);
 
 	/* Post notification updates */
 	switch (stream->state) {
@@ -2436,7 +2439,6 @@ static void bap_bcast_set_state(struct bt_bap_stream *stream, uint8_t state)
 		break;
 	case BT_ASCS_ASE_STATE_RELEASING:
 		bap_stream_io_detach(stream);
-		stream_set_state(stream, BT_BAP_STREAM_STATE_IDLE);
 		break;
 	case BT_ASCS_ASE_STATE_ENABLING:
 		if (bt_bap_stream_get_io(stream))
@@ -2579,6 +2581,7 @@ static unsigned int bap_bcast_release(struct bt_bap_stream *stream,
 					void *user_data)
 {
 	stream_set_state(stream, BT_BAP_STREAM_STATE_RELEASING);
+	stream_set_state(stream, BT_BAP_STREAM_STATE_IDLE);
 
 	return 1;
 }
@@ -3033,9 +3036,13 @@ static void bap_stream_notify_connecting(struct bt_bap_stream *stream,
 {
 	const struct queue_entry *entry;
 
-	for (entry = queue_get_entries(stream->bap->state_cbs); entry;
-						entry = entry->next) {
+	for (entry = queue_get_entries(stream->bap->state_cbs); entry;) {
 		struct bt_bap_state *state = entry->data;
+
+		/* Prefetch next entry since the callback may remove the current
+		 * entry.
+		 */
+		entry = entry->next;
 
 		if (state->connecting)
 			state->connecting(stream, connecting, fd, state->data);
@@ -6726,6 +6733,9 @@ unsigned int bt_bap_stream_release(struct bt_bap_stream *stream,
 {
 	unsigned int id;
 	struct bt_bap *bap;
+
+	if (!bap_stream_valid(stream))
+		return 0;
 
 	if (!stream || !stream->ops || !stream->ops->release)
 		return 0;
