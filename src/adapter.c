@@ -167,6 +167,7 @@ static GSList *adapter_drivers = NULL;
 
 static GSList *disconnect_list = NULL;
 static GSList *conn_fail_list = NULL;
+static GSList *connect_list = NULL;
 
 struct link_key_info {
 	bdaddr_t bdaddr;
@@ -7256,6 +7257,22 @@ static void filter_duplicate_data(void *data, void *user_data)
 	*duplicate = client->discovery_filter->duplicate;
 }
 
+static bool discovery_filter_has_proximity(struct btd_adapter *adapter)
+{
+	GSList *l;
+
+	for (l = adapter->discovery_list; l; l = g_slist_next(l)) {
+		struct discovery_client *client = l->data;
+		struct discovery_filter *filter = client->discovery_filter;
+
+		if (filter && (filter->rssi != DISTANCE_VAL_INVALID ||
+				filter->pathloss != DISTANCE_VAL_INVALID))
+			return true;
+	}
+
+	return false;
+}
+
 static bool device_is_discoverable(struct btd_adapter *adapter,
 					struct eir_data *eir, const char *addr,
 					uint8_t bdaddr_type, bool *auto_connect)
@@ -7415,8 +7432,17 @@ void btd_adapter_device_found(struct btd_adapter *adapter,
 	 * older kernels send separate adv_ind and scan_rsp. Newer
 	 * kernels send them merged, so once we know which mgmt version
 	 * supports this we can make the non-zero check conditional.
+	 *
+	 * Only infer BR/EDR support when the LE address is a Public Device
+	 * Address. A dual-mode device uses the same Public Device Address for
+	 * BR/EDR and LE, so in that case the advertised address is also a valid
+	 * BD_ADDR to page. A random address (static, resolvable or
+	 * non-resolvable) has no defined relationship to the device's BD_ADDR,
+	 * so recording BR/EDR support against it makes the device look pageable
+	 * at an address that can never be paged: SDP discovery then fails with
+	 * Page Timeout and takes the working LE link down with it.
 	 */
-	if (bdaddr_type != BDADDR_BREDR && eir_data.flags &&
+	if (bdaddr_type == BDADDR_LE_PUBLIC && eir_data.flags &&
 					!(eir_data.flags & EIR_BREDR_UNSUP)) {
 		device_set_bredr_support(dev);
 		/* Update last seen for BR/EDR in case its flag is set */
@@ -7452,7 +7478,8 @@ void btd_adapter_device_found(struct btd_adapter *adapter,
 	if (name_resolve_failed)
 		device_name_resolve_fail(dev);
 
-	if (adapter->filtered_discovery)
+	if (adapter->filtered_discovery &&
+				discovery_filter_has_proximity(adapter))
 		device_set_rssi_with_delta(dev, rssi, 0);
 	else
 		device_set_rssi(dev, rssi);
@@ -8609,6 +8636,17 @@ int adapter_bonding_attempt(struct btd_adapter *adapter, const bdaddr_t *bdaddr,
 	return 0;
 }
 
+static void connect_notify(struct btd_device *dev, uint8_t bdaddr_type)
+{
+	GSList *l;
+
+	for (l = connect_list; l; l = g_slist_next(l)) {
+		btd_connect_cb connect_cb = l->data;
+
+		connect_cb(dev, bdaddr_type);
+	}
+}
+
 static void disconnect_notify(struct btd_device *dev, uint8_t reason)
 {
 	GSList *l;
@@ -8660,6 +8698,16 @@ void btd_add_disconnect_cb(btd_disconnect_cb func)
 void btd_remove_disconnect_cb(btd_disconnect_cb func)
 {
 	disconnect_list = g_slist_remove(disconnect_list, func);
+}
+
+void btd_add_connect_cb(btd_connect_cb func)
+{
+	connect_list = g_slist_append(connect_list, func);
+}
+
+void btd_remove_connect_cb(btd_connect_cb func)
+{
+	connect_list = g_slist_remove(connect_list, func);
 }
 
 static void disconnect_complete(uint8_t status, uint16_t length,
@@ -9606,6 +9654,8 @@ static void connected_callback(uint16_t index, uint16_t length,
 		adapter_msd_notify(adapter, device, eir_data.msd_list);
 
 	eir_data_free(&eir_data);
+
+	connect_notify(device, ev->addr.type);
 }
 
 static void controller_resume_notify(struct btd_adapter *adapter)
