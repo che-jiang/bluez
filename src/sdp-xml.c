@@ -25,6 +25,8 @@
 #include "bluetooth/sdp.h"
 #include "bluetooth/sdp_lib.h"
 
+#include "shared/queue.h"
+
 #include "sdp-xml.h"
 
 #define DBG(...) (void)(0)
@@ -44,7 +46,7 @@ struct sdp_xml_data {
 	char type;			/* 0 = Text or Hexadecimal */
 	char *name;			/* Name, optional in the dtd */
 	/* TODO: What is it used for? */
-	sdp_data_t *tail;		/* Tail for O(1) dataseq append */
+	struct queue *seq;		/* Members of a dataseq, if any */
 };
 
 struct context_data {
@@ -510,14 +512,54 @@ static void element_start(GMarkupParseContext *context,
 	}
 }
 
+/*
+ * Link the members collected in elem->seq into elem->data->val.dataseq.
+ *
+ * Members are collected in a queue so that appending is O(1), sdp_seq_append()
+ * would otherwise have to walk to the tail of the sequence on every append.
+ */
+static void sdp_xml_data_flush_seq(struct sdp_xml_data *elem)
+{
+	const struct queue_entry *entry;
+	sdp_data_t *tail = NULL;
+
+	if (!elem->seq)
+		return;
+
+	for (entry = queue_get_entries(elem->seq); entry; entry = entry->next) {
+		if (tail)
+			sdp_seq_append(tail, entry->data);
+		else
+			elem->data->val.dataseq = sdp_seq_append(NULL,
+								entry->data);
+		tail = entry->data;
+	}
+
+	queue_destroy(elem->seq, NULL);
+	elem->seq = NULL;
+}
+
 static void sdp_xml_data_free(struct sdp_xml_data *elem)
 {
+	queue_destroy(elem->seq, (queue_destroy_func_t) sdp_data_free);
+
 	if (elem->data)
 		sdp_data_free(elem->data);
 
 	free(elem->name);
 	free(elem->text);
 	free(elem);
+}
+
+/* Free the elements left on the stack, e.g. by a document that is malformed */
+static void sdp_xml_data_free_stack(struct sdp_xml_data *elem)
+{
+	while (elem) {
+		struct sdp_xml_data *next = elem->next;
+
+		sdp_xml_data_free(elem);
+		elem = next;
+	}
 }
 
 static void element_end(GMarkupParseContext *context,
@@ -568,6 +610,8 @@ static void element_end(GMarkupParseContext *context,
 		return;
 	}
 
+	sdp_xml_data_flush_seq(ctx_data->stack_head);
+
 	if (!strcmp(element_name, "sequence")) {
 		if (!SDP_IS_SEQ(ctx_data->stack_head->data->dtd)) {
 			g_set_error(err, G_MARKUP_ERROR,
@@ -610,28 +654,21 @@ static void element_end(GMarkupParseContext *context,
 
 	if (ctx_data->stack_head->next && ctx_data->stack_head->data &&
 					ctx_data->stack_head->next->data) {
-		sdp_data_t *tail;
-		switch (ctx_data->stack_head->next->data->dtd) {
+		struct sdp_xml_data *parent = ctx_data->stack_head->next;
+
+		switch (parent->data->dtd) {
 		case SDP_SEQ8:
 		case SDP_SEQ16:
 		case SDP_SEQ32:
 		case SDP_ALT8:
 		case SDP_ALT16:
 		case SDP_ALT32:
-			tail = ctx_data->stack_head->next->data->val.dataseq ?
-				ctx_data->stack_head->next->tail : NULL;
-			if (tail) {
-				sdp_seq_append(tail,
-					ctx_data->stack_head->data);
-			} else {
-				ctx_data->stack_head->next->data->val.dataseq =
-					sdp_seq_append(NULL,
-						ctx_data->stack_head->data);
-			}
-			ctx_data->stack_head->next->tail =
-					ctx_data->stack_head->data;
-			ctx_data->stack_head->data = NULL;
-			ctx_data->stack_head->tail = NULL;
+			if (!parent->seq)
+				parent->seq = queue_new();
+
+			if (queue_push_tail(parent->seq,
+						ctx_data->stack_head->data))
+				ctx_data->stack_head->data = NULL;
 			break;
 		}
 
@@ -670,12 +707,15 @@ sdp_record_t *sdp_xml_parse_record(const char *data, int size)
 	if (g_markup_parse_context_parse(ctx, data, size, NULL) == FALSE) {
 		error("XML parsing error");
 		g_markup_parse_context_free(ctx);
+		sdp_xml_data_free_stack(ctx_data->stack_head);
 		sdp_record_free(record);
 		free(ctx_data);
 		return NULL;
 	}
 
 	g_markup_parse_context_free(ctx);
+
+	sdp_xml_data_free_stack(ctx_data->stack_head);
 
 	free(ctx_data);
 
