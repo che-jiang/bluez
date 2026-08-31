@@ -811,6 +811,19 @@ static uint8_t l2cap_sig_send(struct bthost *bthost, struct btconn *conn,
 	return ident;
 }
 
+uint8_t bthost_l2cap_sig_raw(struct bthost *bthost, uint16_t handle,
+					uint8_t code, uint8_t ident,
+					const void *data, uint16_t len)
+{
+	struct btconn *conn;
+
+	conn = bthost_find_conn(bthost, handle);
+	if (!conn)
+		return 0;
+
+	return l2cap_sig_send(bthost, conn, code, ident, data, len);
+}
+
 void bthost_add_cid_hook(struct bthost *bthost, uint16_t handle, uint16_t cid,
 				bthost_cid_hook_func_t func, void *user_data)
 {
@@ -2606,6 +2619,13 @@ static bool l2cap_ecred_conn_req(struct bthost *bthost, struct btconn *conn,
 
 	len -= sizeof(rsp.pdu);
 	num_scid = len / sizeof(*req->scid);
+
+	if (num_scid > (int)ARRAY_SIZE(rsp.dcid)) {
+		rsp.pdu.result = cpu_to_le16(0x000c); /* Refuse all - Invalid */
+		bthost_debug(bthost, "invalid ECRED_CONN_REQ (num_scid = %d)",
+								num_scid);
+		goto respond;
+	}
 
 	for (; i < num_scid; i++)
 		rsp.dcid[i] = cpu_to_le16(conn->next_cid++);
