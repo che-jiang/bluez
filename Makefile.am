@@ -686,7 +686,9 @@ unit_tests += unit/test-avrcp
 unit_test_avrcp_SOURCES = unit/test-avrcp.c \
 				src/log.h src/log.c \
 				unit/avctp.c unit/avctp.h \
-				unit/avrcp-lib.c unit/avrcp-lib.h
+				unit/avrcp-lib.c unit/avrcp-lib.h \
+				profiles/audio/avrcp-parse.h \
+				profiles/audio/avrcp-parse.c
 unit_test_avrcp_LDADD = lib/libbluetooth-internal.la \
 				src/libshared-glib.la $(GLIB_LIBS)
 
@@ -856,6 +858,17 @@ endif
 
 TESTS = $(unit_tests)
 AM_TESTS_ENVIRONMENT = MALLOC_CHECK_=3 MALLOC_PERTURB_=69
+
+check-functional: all
+	python3 -m pytest "$(srcdir)/test/functional" -v \
+		-m "not tester" \
+		--kernel="$(FUNCTIONAL_TESTING_KERNEL)" \
+		--bluez-build-dir="$(top_builddir)" \
+		--bluez-src-dir="$(srcdir)"
+
+if FUNCTIONAL_TESTING
+check: check-functional
+endif
 
 if DBUS_RUN_SESSION
 AM_TESTS_ENVIRONMENT += dbus-run-session --
