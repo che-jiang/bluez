@@ -73,6 +73,7 @@
 #define COLOR_HCI_ACLDATA		COLOR_CYAN
 #define COLOR_HCI_SCODATA		COLOR_YELLOW
 #define COLOR_HCI_ISODATA		COLOR_YELLOW
+#define COLOR_HCI_VENDOR		COLOR_GREEN
 
 #define COLOR_UNKNOWN_ERROR		COLOR_WHITE_BG
 #define COLOR_UNKNOWN_FEATURE_BIT	COLOR_WHITE_BG
@@ -604,13 +605,26 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 			max_len = col - len - ts_len - 3;
 		}
 
+		/* col comes from the terminal and len includes the optional
+		 * "comm[pid]: " prefix, so max_len can still be negative
+		 * here, or larger than the space left in line[]. Both
+		 * overflow the snprintf below, and a negative value also
+		 * indexes before line[].
+		 */
+		if (max_len > (int) sizeof(line) - pos - 1)
+			max_len = (int) sizeof(line) - pos - 1;
+		if (max_len < 0)
+			max_len = 0;
+
 		n = snprintf(line + pos, max_len + 1, "%s%s",
 						label ? ": " : "", text);
 		if (n > max_len) {
-			line[pos + max_len - 1] = '.';
-			line[pos + max_len - 2] = '.';
-			if (line[pos + max_len - 3] == ' ')
-				line[pos + max_len - 3] = '.';
+			if (max_len >= 3) {
+				line[pos + max_len - 1] = '.';
+				line[pos + max_len - 2] = '.';
+				if (line[pos + max_len - 3] == ' ')
+					line[pos + max_len - 3] = '.';
+			}
 
 			n = max_len;
 		}
@@ -2422,6 +2436,24 @@ static void print_slot_125u(const char *label, uint16_t value)
 {
 	 print_field("%s: %.3f msec (0x%4.4x)", label,
 				le16_to_cpu(value) * 0.125, le16_to_cpu(value));
+}
+
+/* Connection event length recommended in requests by a Peripheral:
+ * Range: 0x0001 to 0x7CFF, Time = N * 125 us
+ */
+#define BT_HCI_CE_LEN_MIN 0x0001
+#define BT_HCI_CE_LEN_MAX 0x7cff
+
+static void print_ce_len(const char *label, uint16_t value)
+{
+	uint16_t val = le16_to_cpu(value);
+
+	if (val < BT_HCI_CE_LEN_MIN || val > BT_HCI_CE_LEN_MAX) {
+		print_field("%s: Reserved (0x%4.4x)", label, val);
+		return;
+	}
+
+	print_field("%s: %.3f msec (0x%4.4x)", label, val * 0.125, val);
 }
 
 static void print_slot_625(const char *label, uint16_t value)
@@ -4531,6 +4563,12 @@ void packet_monitor(struct timeval *tv, struct ucred *cred,
 		break;
 	case BTSNOOP_OPCODE_ISO_RX_PKT:
 		packet_hci_isodata(tv, cred, index, true, data, size);
+		break;
+	case BTSNOOP_OPCODE_VENDOR_TX_PKT:
+		packet_hci_vendor(tv, cred, index, false, data, size);
+		break;
+	case BTSNOOP_OPCODE_VENDOR_RX_PKT:
+		packet_hci_vendor(tv, cred, index, true, data, size);
 		break;
 	case BTSNOOP_OPCODE_OPEN_INDEX:
 		if (index < MAX_INDEX)
@@ -9919,8 +9957,8 @@ static void le_conn_rate_cmd(uint16_t index, const void *data, uint8_t size)
 	print_field("Supervision Timeout: %d ms (0x%4.4x)",
 				le16_to_cpu(cmd->supv_timeout) * 10,
 				le16_to_cpu(cmd->supv_timeout));
-	print_slot_125u("Minimum CE Length", cmd->min_ce_len);
-	print_slot_125u("Maximum CE Length", cmd->max_ce_len);
+	print_ce_len("Minimum CE Length", cmd->min_ce_len);
+	print_ce_len("Maximum CE Length", cmd->max_ce_len);
 }
 
 static void le_set_def_rate_cmd(uint16_t index, const void *data, uint8_t size)
@@ -9944,8 +9982,8 @@ static void le_set_def_rate_cmd(uint16_t index, const void *data, uint8_t size)
 	print_field("Supervision Timeout: %d ms (0x%4.4x)",
 				le16_to_cpu(cmd->supv_timeout) * 10,
 				le16_to_cpu(cmd->supv_timeout));
-	print_slot_125u("Minimum CE Length", cmd->min_ce_len);
-	print_slot_125u("Maximum CE Length", cmd->max_ce_len);
+	print_ce_len("Minimum CE Length", cmd->min_ce_len);
+	print_ce_len("Maximum CE Length", cmd->max_ce_len);
 }
 
 static void le_read_conn_interval_rsp(uint16_t index, const void *data,
@@ -11169,7 +11207,7 @@ static const struct vendor_ocf *current_vendor_ocf(uint16_t ocf)
 	return NULL;
 }
 
-static const struct vendor_evt *current_vendor_evt(const void *data,
+static const struct evt_vendor *current_evt_vendor(const void *data,
 					uint8_t size, int *consumed_size)
 {
 	uint16_t manufacturer;
@@ -11177,7 +11215,7 @@ static const struct vendor_evt *current_vendor_evt(const void *data,
 
 	if (msft_event_prefix_match(data, size)) {
 		*consumed_size = index_list[index_current].msft_evt_len;
-		return msft_vendor_evt();
+		return msft_evt_vendor();
 	}
 
 	/* A regular vendor event consumes 1 byte. */
@@ -11190,15 +11228,15 @@ static const struct vendor_evt *current_vendor_evt(const void *data,
 
 	switch (manufacturer) {
 	case COMPANY_ID_INTEL:
-		return intel_vendor_evt(data, consumed_size);
+		return intel_evt_vendor(data, consumed_size);
 	case COMPANY_ID_BROADCOM:
-		return broadcom_vendor_evt(evt);
+		return broadcom_evt_vendor(evt);
 	}
 
 	return NULL;
 }
 
-static const char *current_vendor_evt_str(const void *data, uint8_t size)
+static const char *current_evt_vendor_str(const void *data, uint8_t size)
 {
 	uint16_t manufacturer;
 
@@ -13896,17 +13934,17 @@ static void le_meta_event_evt(struct timeval *tv, uint16_t index,
 	print_subevent(tv, index, subevent_data, data + 1, size - 1);
 }
 
-static void vendor_evt(struct timeval *tv, uint16_t index,
+static void evt_vendor(struct timeval *tv, uint16_t index,
 				const void *data, uint8_t size)
 {
 	struct subevent_data vendor_data;
 	char vendor_str[150];
 	int consumed_size;
-	const struct vendor_evt *vnd = current_vendor_evt(data, size,
+	const struct evt_vendor *vnd = current_evt_vendor(data, size,
 								&consumed_size);
 
 	if (vnd) {
-		const char *str = current_vendor_evt_str(data, size);
+		const char *str = current_evt_vendor_str(data, size);
 
 		if (str) {
 			snprintf(vendor_str, sizeof(vendor_str),
@@ -13931,7 +13969,7 @@ static void vendor_evt(struct timeval *tv, uint16_t index,
 		else
 			manufacturer = fallback_manufacturer;
 
-		vendor_event(manufacturer, data, size);
+		event_vendor(manufacturer, data, size);
 	}
 }
 
@@ -14098,7 +14136,7 @@ static const struct event_data event_table[] = {
 	{ 0x59, "Encryption Change v2",
 				encrypt_change_evt_v2, 5, true },
 	{ 0xfe, "Testing" },
-	{ 0xff, "Vendor", vendor_evt, 0, false },
+	{ 0xff, "Vendor", evt_vendor, 0, false },
 	{ }
 };
 
@@ -14768,6 +14806,25 @@ malformed:
 	else
 		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 				"Malformed ISO Data TX packet", NULL, NULL);
+	packet_hexdump(data, size);
+}
+
+void packet_hci_vendor(struct timeval *tv, struct ucred *cred, uint16_t index,
+				bool in, const void *data, uint16_t size)
+{
+	char extra_str[16];
+
+	if (index >= MAX_INDEX) {
+		print_field("Invalid index (%d).", index);
+		return;
+	}
+
+	index_list[index].frame++;
+
+	sprintf(extra_str, "(len %d)", size);
+	print_packet(tv, cred, in ? '>' : '<', index, NULL, COLOR_HCI_VENDOR,
+				"HCI Vendor", NULL, extra_str);
+
 	packet_hexdump(data, size);
 }
 
