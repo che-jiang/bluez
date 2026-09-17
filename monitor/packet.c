@@ -2639,6 +2639,15 @@ void packet_print_version(const char *label, uint8_t version,
 	case 0x0e:
 		str = "Bluetooth 6.0";
 		break;
+	case 0x0f:
+		str = "Bluetooth 6.1";
+		break;
+	case 0x10:
+		str = "Bluetooth 6.2";
+		break;
+	case 0x11:
+		str = "Bluetooth 6.3";
+		break;
 	default:
 		str = "Reserved";
 		break;
@@ -3330,6 +3339,7 @@ static const struct bitfield_data events_page2_table[] = {
 	{ 22, "Inquiry Response Notification"				},
 	{ 23, "Authenticated Payload Timeout Expired"			},
 	{ 24, "SAM Status Change"					},
+	{ 25, "Encryption Change [v2]"					},
 	{ }
 };
 
