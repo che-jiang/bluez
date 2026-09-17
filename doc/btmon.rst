@@ -232,13 +232,95 @@ input going into the controller, ``>`` is output coming from it.
 
 **HCI event responses** reference the command they complete::
 
+    < HCI Command: Reset (0x03|0x0003) plen 0             #5 [hci0] 12:35:01.843185
     > HCI Event: Command Complete (0x0e) plen 4           #6 [hci0] 12:35:01.864922
-          Reset (0x03|0x0003) ncmd 2
+          Reset (0x03|0x0003) ncmd 2 #5 (21.737 msec)
             Status: Success (0x00)
 
 Here ``ncmd 2`` indicates the controller can accept 2 more commands
 (HCI flow control). The indented body shows the command this event
 completes and the result status.
+
+The trailing ``#5 (21.737 msec)`` is the frame number of the command that
+this event responds to, and how long the controller took to respond. It
+saves scrolling back through the trace to find the request, and makes a
+slow command obvious at the point where it completes.
+
+Several commands may be outstanding at once and they need not complete in
+order, so the reference is resolved by opcode, oldest first. It is omitted
+when the request was not captured, which is normal for the first commands
+seen when attaching to a system that is already running. ``Command Status``
+events carry the same reference.
+
+Some commands are only acknowledged by a ``Command Status`` and complete
+much later through a separate event. Those events carry the reference as a
+``Request`` field instead::
+
+    < HCI Command: Create Connection (0x01|0x0005) plen 13    #12 [hci0] 3.175055
+            Address: 00:11:22:33:44:55 (CIMSYS Inc)
+    > HCI Event: Command Status (0x0f) plen 4                 #13 [hci0] 3.176055
+          Create Connection (0x01|0x0005) ncmd 1 #12 (1.000 msec)
+    > HCI Event: Connect Complete (0x03) plen 11              #27 [hci0] 6.178055
+            Request: #12 (3003.000 msec)
+            Status: Success (0x00)
+
+This is where the reference is most useful, since the delay between the
+command and its completing event is often seconds and is otherwise only
+visible by comparing timestamps by hand. Page timeouts, slow authentication
+and slow encryption setup all show up directly.
+
+Commands of this kind are matched to their event by connection handle or by
+remote address, so several may be outstanding towards different devices at
+once and still resolve correctly. A ``Command Status`` reporting an error
+means the completing event will never arrive, and the command is dropped
+rather than left to match a later unrelated event.
+
+Protocols Above HCI
+-------------------
+
+The protocols carried over ACL pair their requests and responses through an
+identifier of their own, and their responses carry the same reference::
+
+    L2CAP: Connection Request (0x02) ident 1 len 4
+    L2CAP: Connection Response (0x03) ident 1 len 8 #2 (1.000 msec)
+    ATT: Read By Group Type Request (0x10) len 6
+    ATT: Error Response (0x01) len 4 #6 (45.500 msec)
+    SDP: Service Search Request (0x02) tid 5 len 8
+    SDP: Service Search Response (0x03) tid 5 len 5 #8 (12.400 msec)
+    AVCTP Control: Command: type 0x00 label 7 PID 0x110e
+    AVCTP Control: Response: type 0x00 label 7 PID 0x110e #12 (23.100 msec)
+
+What pairs the two halves differs by protocol:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 20 65
+
+   * - Protocol
+     - Paired by
+     - Notes
+   * - L2CAP
+     - ``ident``
+     - Responses are the request code plus one. A Command Reject
+       may answer any request.
+   * - ATT
+     - Opcode
+     - Responses are the request opcode plus one. Only one request
+       may be outstanding on a bearer. An Error Response names the
+       request it rejects. An indication is paired with its
+       confirmation.
+   * - SDP
+     - ``tid``
+     - Responses are the request PDU plus one. An Error Response
+       may answer any request.
+   * - AVDTP
+     - ``label``
+     - A command is answered by a response accept or reject.
+   * - AVCTP
+     - ``label``
+     - A command is answered by a response.
+
+SMP is not tracked, as its exchange has no transaction identifier.
 
 **LE Meta Events** contain a subevent type::
 
@@ -556,6 +638,9 @@ Analyze mode reports, for each controller found in the trace:
   events, ACL, SCO, ISO, vendor diagnostics, system notes, user
   logs, control messages).
 
+- **Command latency**: How long the controller took to acknowledge
+  commands, and how many commands were never answered at all.
+
 - **Per-connection statistics**: For each connection handle found:
 
   - Connection type (BR-ACL, LE-ACL, BR-SCO, BR-ESCO, LE-ISO)
@@ -591,6 +676,30 @@ packets are fast but some are heavily delayed, which typically points at
 interference, retransmissions or controller buffer stalls. Comparing the
 maximum against ``average + deviation`` shows whether the worst case is
 representative or a one-off outlier.
+
+Command Latency
+---------------
+
+Command latency is reported per controller::
+
+   Command latency: 0-215 msec (~55 msec +/- 70 msec)
+   Commands without response: 3
+
+This measures the interval between an HCI command and the ``Command
+Complete`` or ``Command Status`` that acknowledges it, so it describes the
+responsiveness of the controller itself.
+
+Commands that are only acknowledged by a ``Command Status`` and complete
+much later through a separate event are measured up to the acknowledgement
+only. A ``Create Connection`` that takes three seconds to reach its
+``Connect Complete`` is waiting on the remote device rather than on the
+controller, and including it would swamp both the average and the
+deviation.
+
+``Commands without response`` counts commands that were never acknowledged
+at all before the end of the trace. A non-zero value usually means the
+capture simply ended with commands in flight, but a persistently high count
+points at firmware dropping commands.
 
 Packet Loss
 -----------
