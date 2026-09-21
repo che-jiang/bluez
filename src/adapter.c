@@ -1881,6 +1881,12 @@ static void start_discovery_complete(uint8_t status, uint16_t length,
 		if (status != MGMT_STATUS_SUCCESS)
 			return;
 
+		if (length < sizeof(*rp)) {
+			btd_error(adapter->dev_id,
+				"Wrong size of start discovery return parameters");
+			return;
+		}
+
 		/* Stop discovering as there are no clients left */
 		cp.type = rp->type;
 		mgmt_send(adapter->mgmt, MGMT_OP_STOP_DISCOVERY,
@@ -7293,7 +7299,6 @@ static struct btd_adapter *btd_adapter_new(uint16_t index)
 
 static void adapter_remove(struct btd_adapter *adapter)
 {
-	GSList *l;
 	struct gatt_db *db;
 	struct btd_ranging_provider_manager *ranging_manager;
 
@@ -7302,13 +7307,19 @@ static void adapter_remove(struct btd_adapter *adapter)
 	g_slist_free(adapter->connect_list);
 	adapter->connect_list = NULL;
 
-	for (l = adapter->devices; l; l = l->next) {
-		device_removed_drivers(adapter, l->data);
-		device_remove(l->data, FALSE);
-	}
+	while (adapter->devices) {
+		struct btd_device *device = adapter->devices->data;
 
-	g_slist_free(adapter->devices);
-	adapter->devices = NULL;
+		/* Take the device out of the list before removing it, as
+		 * freeing it looks devices up, e.g. when cleaning up its
+		 * GATT server, and the ones already freed would still be
+		 * found.
+		 */
+		adapter->devices = g_slist_remove(adapter->devices, device);
+
+		device_removed_drivers(adapter, device);
+		device_remove(device, FALSE);
+	}
 
 	g_slist_free(adapter->discovery_found);
 	adapter->discovery_found = NULL;

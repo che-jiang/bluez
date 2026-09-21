@@ -340,7 +340,8 @@ struct generic_data {
 	bool expect_ignore_param;
 	const void *expect_param;
 	uint16_t expect_len;
-	const void * (*expect_func)(uint16_t *len);
+	const void * (*expect_func)(const void *param, uint16_t param_len,
+							uint16_t *len);
 	uint32_t expect_settings_set;
 	uint32_t expect_settings_unset;
 	uint32_t expect_settings_spontaneous;
@@ -2768,11 +2769,15 @@ static const struct generic_data load_link_keys_invalid_params_test_2 = {
 	.expect_status = MGMT_STATUS_INVALID_PARAMS,
 };
 
+/* Kernel commit 1e9683c9b6ca ("Bluetooth: MGMT: Ignore keys being loaded
+ * with invalid type") made invalid entries be skipped instead of failing
+ * the whole command, so this is expected to succeed.
+ */
 static const struct generic_data load_link_keys_invalid_params_test_3 = {
 	.send_opcode = MGMT_OP_LOAD_LINK_KEYS,
 	.send_param = load_link_keys_invalid_param_3,
 	.send_len = sizeof(load_link_keys_invalid_param_3),
-	.expect_status = MGMT_STATUS_INVALID_PARAMS,
+	.expect_status = MGMT_STATUS_SUCCESS,
 };
 
 static const char load_ltks_valid_param_1[] = { 0x00, 0x00 };
@@ -3066,18 +3071,22 @@ static const struct generic_data load_ltks_invalid_params_test_1 = {
 	.expect_status = MGMT_STATUS_INVALID_PARAMS,
 };
 
+/* Invalid entries are skipped instead of failing the whole command,
+ * see kernel commit 1e9683c9b6ca ("Bluetooth: MGMT: Ignore keys being
+ * loaded with invalid type").
+ */
 static const struct generic_data load_ltks_invalid_params_test_2 = {
 	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
 	.send_param = load_ltks_invalid_param_2,
 	.send_len = sizeof(load_ltks_invalid_param_2),
-	.expect_status = MGMT_STATUS_INVALID_PARAMS,
+	.expect_status = MGMT_STATUS_SUCCESS,
 };
 
 static const struct generic_data load_ltks_invalid_params_test_3 = {
 	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
 	.send_param = load_ltks_invalid_param_3,
 	.send_len = sizeof(load_ltks_invalid_param_3),
-	.expect_status = MGMT_STATUS_INVALID_PARAMS,
+	.expect_status = MGMT_STATUS_SUCCESS,
 };
 
 static const char load_ltks_invalid_param_4[22] = { 0x1d, 0x07 };
@@ -3158,7 +3167,8 @@ static const void *pair_device_send_param_func(uint16_t *len)
 	return param;
 }
 
-static const void *pair_device_expect_param_func(uint16_t *len)
+static const void *pair_device_expect_param_func(const void *p, uint16_t plen,
+								uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	const struct generic_data *test = data->test_data;
@@ -3236,6 +3246,11 @@ static const struct generic_data pair_device_legacy_nonbondable_1 = {
 	.client_pin_len = sizeof(pair_device_pin),
 };
 
+/* Whether the pending Pair Device command gets answered by
+ * __mgmt_power_off() with Not Powered or by the connection failure
+ * callbacks with Disconnected when the controller is forced down
+ * with HCIDEVDOWN depends on timing.
+ */
 static const struct generic_data pair_device_power_off_test_1 = {
 	.setup_settings = settings_powered_bondable,
 	.send_opcode = MGMT_OP_PAIR_DEVICE,
@@ -3243,6 +3258,7 @@ static const struct generic_data pair_device_power_off_test_1 = {
 	.force_power_off = true,
 	.expect_status = MGMT_STATUS_DISCONNECTED,
 	.expect_func = pair_device_expect_param_func,
+	.fail_tolerant = true,
 };
 
 static const void *client_bdaddr_param_func(uint8_t *len)
@@ -4292,7 +4308,8 @@ static const void *get_clock_info_send_param_func(uint16_t *len)
 	return param;
 }
 
-static const void *get_clock_info_expect_param_func(uint16_t *len)
+static const void *get_clock_info_expect_param_func(const void *p,
+						uint16_t plen, uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	static uint8_t param[17];
@@ -4312,7 +4329,8 @@ static const void *get_clock_info_expect_param_func(uint16_t *len)
 	return param;
 }
 
-static const void *get_clock_info_expect_param_not_powered_func(uint16_t *len)
+static const void *get_clock_info_expect_param_not_powered_func(const void *p,
+						uint16_t plen, uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	static uint8_t param[17];
@@ -4339,7 +4357,8 @@ static const void *get_conn_info_send_param_func(uint16_t *len)
 	return param;
 }
 
-static const void *get_conn_info_expect_param_func(uint16_t *len)
+static const void *get_conn_info_expect_param_func(const void *p, uint16_t plen,
+								uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	static uint8_t param[10];
@@ -4355,7 +4374,8 @@ static const void *get_conn_info_expect_param_func(uint16_t *len)
 	return param;
 }
 
-static const void *get_conn_info_error_expect_param_func(uint16_t *len)
+static const void *get_conn_info_error_expect_param_func(const void *p,
+						uint16_t plen, uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	static uint8_t param[10];
@@ -4402,7 +4422,8 @@ static const struct generic_data get_conn_info_ncon_test = {
 	.expect_func = get_conn_info_error_expect_param_func,
 };
 
-static const void *get_conn_info_expect_param_power_off_func(uint16_t *len)
+static const void *get_conn_info_expect_param_power_off_func(const void *p,
+						uint16_t plen, uint16_t *len)
 {
 	struct test_data *data = tester_get_data();
 	static uint8_t param[10];
@@ -7635,7 +7656,12 @@ static void command_generic_callback(uint8_t status, uint16_t length,
 
 	if (status != test->expect_status) {
 		if (!test->fail_tolerant || !!status != !!test->expect_status) {
-			tester_test_abort();
+			tester_warn("Unexpected status got %s (0x%02x) "
+							"expected %s (0x%02x)",
+				mgmt_errstr(status), status,
+				mgmt_errstr(test->expect_status),
+				test->expect_status);
+			tester_test_failed();
 			return;
 		}
 
@@ -7645,7 +7671,8 @@ static void command_generic_callback(uint8_t status, uint16_t length,
 
 	if (!test->expect_ignore_param) {
 		if (test->expect_func)
-			expect_param = test->expect_func(&expect_len);
+			expect_param = test->expect_func(param, length,
+								&expect_len);
 
 		if (length != expect_len) {
 			tester_warn("Invalid cmd response parameter size %d %d",
@@ -10206,15 +10233,42 @@ static const uint8_t read_exp_feat_param_success[] = {
 	0x01, 0x00, 0x00, 0x00,			/* Flags */
 };
 
-static const struct generic_data read_exp_feat_success = {
-	.send_opcode = MGMT_OP_READ_EXP_FEATURES_INFO,
-	.expect_status = MGMT_STATUS_SUCCESS,
-	.expect_param = read_exp_feat_param_success,
-	.expect_len = sizeof(read_exp_feat_param_success),
+/* Kernel Debug feature (d4992530-b9ec-469f-ab01-6c481c47da1c) is present only
+ * for CONFIG_BT_FEATURE_DEBUG. Accept either configuration.
+ */
+static const uint8_t read_exp_feat_param_success_debug[] = {
+	0x05, 0x00,				/* Feature Count */
+	0x1c, 0xda, 0x47, 0x1c, 0x48, 0x6c,	/* UUID - Debug */
+	0x01, 0xab, 0x9f, 0x46, 0xec, 0xb9,
+	0x30, 0x25, 0x99, 0xd4,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+	0xd6, 0x49, 0xb0, 0xd1, 0x28, 0xeb,	/* UUID - Simultaneous */
+	0x27, 0x92, 0x96, 0x46, 0xc0, 0x42,	/* Central Peripheral */
+	0xb5, 0x10, 0x1b, 0x67,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+	0xaf, 0x29, 0xc6, 0x66, 0xac, 0x5f,	/* UUID - Codec Offload */
+	0x1a, 0x88, 0xb9, 0x4f, 0x7f, 0xee,
+	0xce, 0x5a, 0x69, 0xa6,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+	0x3e, 0xe0, 0xb4, 0xfd, 0xdd, 0xd6,	/* UUID - ISO Socket */
+	0x85, 0x98, 0x6a, 0x49, 0xe0, 0x05,
+	0x88, 0xf1, 0xba, 0x6f,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+	0x76, 0x6e, 0xf3, 0xe8, 0x24, 0x5f,	/* UUID - Mesh support */
+	0x05, 0xbf, 0x8d, 0x4d, 0x03, 0x7a,
+	0xd7, 0x63, 0xe4, 0x2c,
+	0x01, 0x00, 0x00, 0x00,			/* Flags */
 };
 
-
 static const uint8_t read_exp_feat_param_success_index_none[] = {
+	0x01, 0x00,				/* Feature Count */
+	0x3e, 0xe0, 0xb4, 0xfd, 0xdd, 0xd6,	/* UUID - ISO Socket */
+	0x85, 0x98, 0x6a, 0x49, 0xe0, 0x05,
+	0x88, 0xf1, 0xba, 0x6f,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+};
+
+static const uint8_t read_exp_feat_param_success_index_none_debug[] = {
 	0x02, 0x00,				/* Feature Count */
 	0x1c, 0xda, 0x47, 0x1c, 0x48, 0x6c,	/* UUID - Debug */
 	0x01, 0xab, 0x9f, 0x46, 0xec, 0xb9,
@@ -10226,12 +10280,45 @@ static const uint8_t read_exp_feat_param_success_index_none[] = {
 	0x00, 0x00, 0x00, 0x00,			/* Flags */
 };
 
+static const void *read_exp_feat_success_expect(const void *param,
+					uint16_t param_len, uint16_t *len)
+{
+	if (param_len == sizeof(read_exp_feat_param_success_debug)) {
+		*len = sizeof(read_exp_feat_param_success_debug);
+		return read_exp_feat_param_success_debug;
+	}
+
+	*len = sizeof(read_exp_feat_param_success);
+	return read_exp_feat_param_success;
+}
+
+static const void *read_exp_feat_success_index_none_expect(const void *param,
+					uint16_t param_len, uint16_t *len)
+{
+	if (param_len == sizeof(read_exp_feat_param_success_index_none_debug)) {
+		*len = sizeof(read_exp_feat_param_success_index_none_debug);
+		return read_exp_feat_param_success_index_none_debug;
+	}
+
+	*len = sizeof(read_exp_feat_param_success_index_none);
+	return read_exp_feat_param_success_index_none;
+}
+
+static const struct generic_data read_exp_feat_success = {
+	.send_opcode = MGMT_OP_READ_EXP_FEATURES_INFO,
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_param = read_exp_feat_param_success,
+	.expect_len = sizeof(read_exp_feat_param_success),
+	.expect_func = read_exp_feat_success_expect,
+};
+
 static const struct generic_data read_exp_feat_success_index_none = {
 	.send_index_none = true,
 	.send_opcode = MGMT_OP_READ_EXP_FEATURES_INFO,
 	.expect_status = MGMT_STATUS_SUCCESS,
 	.expect_param = read_exp_feat_param_success_index_none,
 	.expect_len = sizeof(read_exp_feat_param_success_index_none),
+	.expect_func = read_exp_feat_success_index_none_expect,
 };
 
 static const uint8_t set_exp_feat_param_offload_codec[] = {
