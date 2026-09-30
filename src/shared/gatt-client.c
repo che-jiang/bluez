@@ -180,11 +180,21 @@ bt_gatt_client_ref_safe(struct bt_gatt_client *client)
 
 static void notify_client_idle(struct bt_gatt_client *client)
 {
+	struct queue *idle_cbs;
+
 	client = bt_gatt_client_ref_safe(client);
 	if (!client)
 		return;
 
-	queue_remove_all(client->idle_cbs, idle_notify, NULL, idle_destroy);
+	/* Detach the callbacks before calling them, as a callback may make
+	 * the client idle again, e.g. if a request it sends fails right away,
+	 * which would otherwise call them again while being removed.
+	 */
+	idle_cbs = client->idle_cbs;
+	client->idle_cbs = queue_new();
+
+	queue_remove_all(idle_cbs, idle_notify, NULL, idle_destroy);
+	queue_destroy(idle_cbs, NULL);
 
 	bt_gatt_client_unref(client);
 }
@@ -2610,6 +2620,14 @@ bool bt_gatt_client_is_ready(struct bt_gatt_client *client)
 	return (client && client->ready);
 }
 
+/* Whether there are no pending requests, e.g. to know if the callbacks
+ * registered with bt_gatt_client_idle_register would be called.
+ */
+bool bt_gatt_client_is_idle(struct bt_gatt_client *client)
+{
+	return (client && queue_isempty(client->pending_requests));
+}
+
 unsigned int bt_gatt_client_ready_register(struct bt_gatt_client *client,
 					bt_gatt_client_callback_t callback,
 					void *user_data,
@@ -3842,6 +3860,8 @@ bool bt_gatt_client_unregister_notify(struct bt_gatt_client *client,
 							unsigned int id)
 {
 	struct notify_data *notify_data;
+	bt_gatt_client_destroy_func_t destroy;
+	void *user_data;
 
 	if (!client || !id)
 		return false;
@@ -3858,7 +3878,26 @@ bool bt_gatt_client_unregister_notify(struct bt_gatt_client *client,
 	notify_data->callback = NULL;
 	notify_data->notify = NULL;
 
+	/* Call destroy once unregistered, as the user data may be freed then,
+	 * while notify_data may still be referenced by a pending procedure,
+	 * e.g. the write of the CCC, which would otherwise call it later.
+	 */
+	destroy = notify_data->destroy;
+	user_data = notify_data->user_data;
+	notify_data->destroy = NULL;
+
+	/* The client may be freed by destroy, e.g. if the user data holds
+	 * its last reference.
+	 */
+	bt_gatt_client_ref(client);
+
 	complete_unregister_notify(notify_data);
+
+	if (destroy)
+		destroy(user_data);
+
+	bt_gatt_client_unref(client);
+
 	return true;
 }
 
