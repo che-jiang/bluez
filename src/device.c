@@ -3869,6 +3869,11 @@ bool btd_device_bdaddr_type_seen(struct btd_device *dev, uint8_t type)
 	return get_state(dev, type)->last_seen != 0;
 }
 
+bool btd_device_bdaddr_type_initiator(struct btd_device *dev, uint8_t type)
+{
+	return get_state(dev, type)->initiator;
+}
+
 static void clear_temporary_timer(struct btd_device *dev)
 {
 	if (dev->temporary_timer) {
@@ -6775,8 +6780,11 @@ static void att_connect_cb(GIOChannel *io, GError *gerr, gpointer user_data)
 		goto done;
 	}
 
-	/* Update connected state */
-	device->le_state.connected = true;
+	/* Update connected state in case the MGMT Device Connected event has
+	 * not been processed yet, the connection was locally initiated.
+	 */
+	if (!device->le_state.connected)
+		device_add_connection(device, device->bdaddr_type, BIT(3));
 
 	if (!device_attach_att(device, io))
 		goto done;
