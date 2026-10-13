@@ -8424,6 +8424,8 @@ struct btdev *btdev_create(enum btdev_type type, uint16_t id)
 
 void btdev_destroy(struct btdev *btdev)
 {
+	int i;
+
 	if (!btdev)
 		return;
 
@@ -8437,6 +8439,9 @@ void btdev_destroy(struct btdev *btdev)
 	queue_destroy(btdev->le_ext_adv, le_ext_adv_free);
 	queue_destroy(btdev->le_per_adv, free);
 	queue_destroy(btdev->le_big, le_big_free);
+
+	for (i = 0; i < MAX_HOOK_ENTRIES; i++)
+		free(btdev->hook_list[i]);
 
 	free(btdev);
 }
@@ -9157,4 +9162,15 @@ int btdev_set_emu_opcode(struct btdev *btdev, uint16_t opcode)
 	default:
 		return -ENOTSUP;
 	}
+}
+
+int btdev_send_event(struct btdev *btdev, uint8_t event, const void *data,
+								uint8_t len)
+{
+	if (!btdev)
+		return -EINVAL;
+
+	send_event(btdev, event, data, len);
+
+	return 0;
 }
